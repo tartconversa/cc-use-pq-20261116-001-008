@@ -27,6 +27,15 @@ class StateError(Conflict):
     code = "invalid_state"
 
 
+class QualityGateFailed(Conflict):
+    code = "quality_gate_failed"
+
+
+class NotAuthorized(LakeError):
+    code = "not_authorized"
+    status = 403
+
+
 class IntegrityFailure(LakeError):
     code = "integrity_failure"
     status = 422

@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Iterator
 
 
+SCHEMA_VERSION = 2
+
 SCHEMA = """
 PRAGMA foreign_keys=ON;
 CREATE TABLE IF NOT EXISTS venues (
@@ -76,6 +78,39 @@ CREATE TABLE IF NOT EXISTS snapshot_members (
 CREATE TABLE IF NOT EXISTS audits (
     audit_id INTEGER PRIMARY KEY AUTOINCREMENT, action TEXT NOT NULL,
     subject TEXT NOT NULL, detail_json TEXT NOT NULL, at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS quality_policies (
+    venue_id TEXT PRIMARY KEY REFERENCES venues(venue_id),
+    revision INTEGER NOT NULL, policy_json TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS quality_approvers (
+    venue_id TEXT NOT NULL REFERENCES venues(venue_id), approver_id TEXT NOT NULL,
+    granted_at TEXT NOT NULL, revoked_at TEXT,
+    PRIMARY KEY(venue_id,approver_id)
+);
+CREATE TABLE IF NOT EXISTS quality_evaluations (
+    evaluation_id TEXT PRIMARY KEY, snapshot_id TEXT NOT NULL REFERENCES snapshots(snapshot_id),
+    venue_id TEXT NOT NULL, local_day TEXT NOT NULL, state_digest TEXT NOT NULL,
+    policy_revision INTEGER NOT NULL, policy_digest TEXT NOT NULL,
+    members_digest TEXT NOT NULL, source_digest TEXT NOT NULL,
+    verdict TEXT NOT NULL, report_json TEXT NOT NULL, created_at TEXT NOT NULL,
+    UNIQUE(snapshot_id,state_digest)
+);
+CREATE TABLE IF NOT EXISTS quality_approvals (
+    approval_id TEXT PRIMARY KEY, snapshot_id TEXT NOT NULL REFERENCES snapshots(snapshot_id),
+    evaluation_id TEXT NOT NULL REFERENCES quality_evaluations(evaluation_id),
+    state_digest TEXT NOT NULL, approver_id TEXT NOT NULL, reason TEXT NOT NULL,
+    created_at TEXT NOT NULL, revoked_at TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_quality_approvals_active
+    ON quality_approvals(snapshot_id,state_digest) WHERE revoked_at IS NULL;
+CREATE INDEX IF NOT EXISTS ix_quality_evaluations_snapshot ON quality_evaluations(snapshot_id);
+CREATE INDEX IF NOT EXISTS ix_quality_approvals_snapshot ON quality_approvals(snapshot_id);
+CREATE TABLE IF NOT EXISTS snapshot_quality (
+    snapshot_id TEXT PRIMARY KEY REFERENCES snapshots(snapshot_id),
+    evaluation_id TEXT NOT NULL REFERENCES quality_evaluations(evaluation_id),
+    approval_id TEXT REFERENCES quality_approvals(approval_id),
+    published_at TEXT NOT NULL
 );
 """
 

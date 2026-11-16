@@ -8,7 +8,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 
-from exhibit_lake.errors import LakeError
+from exhibit_lake.errors import InvalidInput, LakeError
 from exhibit_lake.service import ExhibitLake
 
 
@@ -56,10 +56,30 @@ class StageIn(BaseModel):
 
 class PublishIn(BaseModel):
     expected_head: str | None = None
+    approver_id: str | None = None
+    reason: str | None = None
 
 
 class WithdrawIn(BaseModel):
     withdrawn_on: str
+
+
+class PolicyIn(BaseModel):
+    rules: dict[str, Any]
+    expected_revision: int | None = None
+
+
+class ApproverIn(BaseModel):
+    approver_id: str
+
+
+class ApprovalIn(BaseModel):
+    approver_id: str
+    reason: str
+
+
+class ApprovalRevokeIn(BaseModel):
+    actor_id: str
 
 
 def create_app(database: str | None = None) -> FastAPI:
@@ -126,6 +146,10 @@ def create_app(database: str | None = None) -> FastAPI:
     def partition(venue_id: str, local_day: str):
         return lake.overview(venue_id, local_day)
 
+    @app.get("/venues/{venue_id}/days/{local_day}/gate")
+    def gate_for_day(venue_id: str, local_day: str):
+        return lake.quality_gate.day(venue_id, local_day)
+
     @app.post("/snapshots/stage", status_code=201)
     def stage(data: StageIn):
         return lake.snapshots.stage(data.venue_id, data.local_day, data.expected_head)
@@ -140,7 +164,59 @@ def create_app(database: str | None = None) -> FastAPI:
 
     @app.post("/snapshots/{snapshot_id}/publish")
     def publish(snapshot_id: str, data: PublishIn):
+        if data.approver_id is not None:
+            if data.reason is None:
+                raise InvalidInput("approval reason is required")
+            lake.quality_gate.approve(snapshot_id, data.approver_id, data.reason)
         return lake.snapshots.publish(snapshot_id, data.expected_head)
+
+    @app.get("/snapshots/{snapshot_id}/quality")
+    def snapshot_quality(snapshot_id: str):
+        return lake.quality_gate.evaluate(snapshot_id)
+
+    @app.get("/venues/{venue_id}/days/{local_day}/quality-gate")
+    def day_quality_gate(venue_id: str, local_day: str):
+        return lake.quality_gate.day(venue_id, local_day)
+
+    @app.post("/snapshots/{snapshot_id}/quality/evaluate")
+    def evaluate_snapshot_quality(snapshot_id: str):
+        return lake.quality_gate.evaluate(snapshot_id, persist=True)
+
+    @app.get("/snapshots/{snapshot_id}/quality/evaluations")
+    def snapshot_quality_evaluations(snapshot_id: str):
+        return lake.quality_gate.evaluations(snapshot_id)
+
+    @app.post("/snapshots/{snapshot_id}/quality/approval", status_code=201)
+    def approve_quality_exception(snapshot_id: str, data: ApprovalIn):
+        return lake.quality_gate.approve(snapshot_id, data.approver_id, data.reason)
+
+    @app.get("/snapshots/{snapshot_id}/quality/approvals")
+    def quality_approvals(snapshot_id: str):
+        return lake.quality_gate.approvals(snapshot_id)
+
+    @app.post("/snapshots/{snapshot_id}/quality/approvals/{approval_id}/revoke")
+    def revoke_quality_approval(snapshot_id: str, approval_id: str, data: ApprovalRevokeIn):
+        return lake.quality_gate.revoke_approval(snapshot_id, approval_id, data.actor_id)
+
+    @app.get("/venues/{venue_id}/quality-policy")
+    def quality_policy(venue_id: str):
+        return lake.quality_gate.policy(venue_id)
+
+    @app.put("/venues/{venue_id}/quality-policy")
+    def set_quality_policy(venue_id: str, data: PolicyIn):
+        return lake.quality_gate.set_policy(venue_id, data.rules, data.expected_revision)
+
+    @app.get("/venues/{venue_id}/quality-approvers")
+    def quality_approvers(venue_id: str):
+        return lake.quality_gate.approvers(venue_id)
+
+    @app.post("/venues/{venue_id}/quality-approvers", status_code=201)
+    def grant_quality_approver(venue_id: str, data: ApproverIn):
+        return lake.quality_gate.grant_approver(venue_id, data.approver_id)
+
+    @app.post("/venues/{venue_id}/quality-approvers/{approver_id}/revoke")
+    def revoke_quality_approver(venue_id: str, approver_id: str):
+        return lake.quality_gate.revoke_approver(venue_id, approver_id)
 
     @app.post("/snapshots/{snapshot_id}/abandon")
     def abandon(snapshot_id: str):

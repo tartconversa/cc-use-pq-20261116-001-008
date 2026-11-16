@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from exhibit_lake.errors import InvalidInput
 from exhibit_lake.catalog.registry import Registry
 from exhibit_lake.catalog.store import Store
 from exhibit_lake.catalog.audit import Audit
@@ -12,6 +13,7 @@ from exhibit_lake.ingest.batches import Batches
 from exhibit_lake.ingest.preview import Preview
 from exhibit_lake.publish.snapshots import Snapshots
 from exhibit_lake.publish.recovery import Recovery
+from exhibit_lake.publish.quality import QualityGate
 from exhibit_lake.query.analytics import Analytics
 from exhibit_lake.query.exports import Exports
 from exhibit_lake.query.coverage import Coverage
@@ -26,7 +28,8 @@ class ExhibitLake:
         self.registry = Registry(self.store)
         self.batches = Batches(self.store)
         self.preview = Preview(self.store)
-        self.snapshots = Snapshots(self.store)
+        self.quality_gate = QualityGate(self.store)
+        self.snapshots = Snapshots(self.store, self.quality_gate)
         self.recovery = Recovery(self.store, self.snapshots)
         self.analytics = Analytics(self.store, self.snapshots)
         self.audit = Audit(self.store)
@@ -37,7 +40,6 @@ class ExhibitLake:
         self.contracts = Contracts(self.store)
         self.provenance = Provenance(self.store)
         self.batch_quality = BatchQuality(self.store)
-
     def register_venue(self, venue_id: str, name: str, timezone: str) -> dict:
         return self.registry.venue(venue_id, name, timezone)
 
@@ -55,8 +57,13 @@ class ExhibitLake:
     def ingest(self, source_id: str, contract_id: str, request_key: str, events: list[object]) -> dict:
         return self.batches.ingest(source_id, contract_id, request_key, events)
 
-    def publish_day(self, venue_id: str, local_day: str, expected_head: str | None = None) -> dict:
+    def publish_day(self, venue_id: str, local_day: str, expected_head: str | None = None,
+                    *, approver_id: str | None = None, reason: str | None = None) -> dict:
         staged = self.snapshots.stage(venue_id, local_day, expected_head)
+        if approver_id is not None:
+            if reason is None:
+                raise InvalidInput("approval reason is required")
+            self.quality_gate.approve(staged["snapshot_id"], approver_id, reason)
         return self.snapshots.publish(staged["snapshot_id"], expected_head)
 
     def overview(self, venue_id: str, local_day: str) -> dict:

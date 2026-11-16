@@ -31,8 +31,9 @@ def _statistics(events: list[dict]) -> dict:
 
 
 class Snapshots:
-    def __init__(self, store: Store):
+    def __init__(self, store: Store, quality=None):
         self.store = store
+        self.quality = quality
 
     def _partition(self, conn: sqlite3.Connection, venue_id: str, day: str) -> dict:
         part = Store.one(conn, "SELECT * FROM partitions WHERE venue_id=? AND local_day=?", (venue_id, day))
@@ -144,6 +145,9 @@ class Snapshots:
                 raise Conflict("head changed since candidate staging", details={"head_id": part["head_id"]})
             if snapshot["generation"] != part["generation"] + 1:
                 raise Conflict("snapshot generation is stale")
+            decision = None
+            if self.quality is not None:
+                decision = self.quality.authorize_publication(conn, snapshot, part)
             stamp = now()
             result = conn.execute("UPDATE partitions SET head_id=?,generation=? WHERE venue_id=? AND local_day=? AND head_id IS ? AND generation=?",
                                   (snapshot_id, snapshot["generation"], snapshot["venue_id"], snapshot["local_day"],
@@ -155,7 +159,21 @@ class Snapshots:
                          "IN (SELECT source_id,event_id FROM snapshot_members WHERE snapshot_id=?)", (stamp, snapshot_id))
             Store.audit(conn, "snapshot.published", snapshot_id,
                         {"parent_id": expected_head, "generation": snapshot["generation"]}, stamp)
-            return self._describe(conn, snapshot_id)
+            if decision is not None:
+                self.quality.record_publication(conn, snapshot_id, decision, stamp)
+                Store.audit(conn, "quality.publication_authorized", snapshot_id,
+                            {"verdict": decision["verdict"],
+                             "state_digest": decision["state_digest"],
+                             "evaluation_id": decision["evaluation_id"],
+                             "approval_id": decision["approval_id"]}, stamp)
+            described = self._describe(conn, snapshot_id)
+            if decision is not None:
+                described["quality"] = {"verdict": decision["verdict"],
+                                        "evaluation_id": decision["evaluation_id"],
+                                        "approval_id": decision["approval_id"],
+                                        "state_digest": decision["state_digest"],
+                                        "policy_revision": decision["policy_revision"]}
+            return described
 
     def abandon(self, snapshot_id: str) -> dict:
         with self.store.transaction() as conn:

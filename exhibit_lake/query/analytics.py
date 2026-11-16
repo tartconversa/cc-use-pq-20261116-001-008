@@ -1,6 +1,7 @@
 """基于隔离快照统计访客流量与展品体验。"""
 from __future__ import annotations
 
+import json
 import statistics
 from collections import defaultdict
 
@@ -79,7 +80,35 @@ class Analytics:
                     "generation": snapshot["generation"], "event_count": len(records), "exhibits": result,
                     "total_visitors": sum(x["visitors"] for x in result),
                     "total_feedback": sum(x["feedback_events"] for x in result),
-                    "total_demos": sum(x["demo_events"] for x in result)}
+                    "total_demos": sum(x["demo_events"] for x in result),
+                    "quality": self._quality_summary(conn, snapshot["snapshot_id"])}
+
+    @staticmethod
+    def _quality_summary(conn, snapshot_id: str) -> dict:
+        """随发布记录的来源覆盖结论；没有反馈数据不等于没有人愿意评分。"""
+        row = Store.one(conn, "SELECT q.evaluation_id,q.approval_id,q.published_at,"
+                        "e.report_json,e.verdict FROM snapshot_quality q "
+                        "JOIN quality_evaluations e ON e.evaluation_id=q.evaluation_id "
+                        "WHERE q.snapshot_id=?", (snapshot_id,))
+        if not row:
+            return {"recorded": False}
+        stored = json.loads(row["report_json"])
+        sources = stored.get("coverage", {}).get("sources", [])
+        feedback = [{"source_id": x["source_id"], "status": x["status"],
+                     "snapshot_events": x["snapshot_events"]} for x in sources
+                    if x["kind"] == "feedback"]
+        approval = Store.one(conn, "SELECT a.approval_id,a.approver_id,a.reason,a.created_at "
+                            "FROM quality_approvals a JOIN snapshots s ON s.snapshot_id=a.snapshot_id "
+                            "JOIN quality_approvers p ON p.venue_id=s.venue_id AND p.approver_id=a.approver_id "
+                            "WHERE a.approval_id=? AND a.revoked_at IS NULL AND p.revoked_at IS NULL",
+                            (row["approval_id"],)) if row["approval_id"] else None
+        return {"recorded": True, "verdict": row["verdict"],
+                "evaluation_id": row["evaluation_id"], "approved_at_publication": bool(approval),
+                "approval": approval,
+                "feedback_sources": feedback,
+                "feedback_covered": any(x["snapshot_events"] > 0 for x in feedback),
+                "missing_required_sources": stored.get("coverage", {}).get(
+                    "missing_required_sources", [])}
 
     def events(self, venue_id: str, day: str, snapshot_id: str | None = None,
                *, exhibit_id: str | None = None, kind: str | None = None,
